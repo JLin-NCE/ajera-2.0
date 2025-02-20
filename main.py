@@ -45,20 +45,25 @@ class ProjectFetcher:
         
         # Added attribute to force conversion to PDT
         self.force_pdt = True  # NEW FUNCTIONALITY 1
-        
-        # Initialize debug log
-        with open(self.FILES["DEBUG"], 'w') as f:
-            f.write(f"Debug Log Started: {datetime.now(ZoneInfo('America/Los_Angeles'))}\n")
-            f.write("-" * 80 + "\n")
 
+        # NEW: Initialize a list to store debug log entries (timestamp, message)
+        self.debug_entries = []
+        
+        # Initialize debug log (text file)
+        with open(self.FILES["DEBUG"], 'w') as f:
+            init_msg = f"Debug Log Started: {datetime.now(ZoneInfo('America/Los_Angeles'))}\n" + ("-" * 80 + "\n")
+            f.write(init_msg)
+        
         # Initialize data fetched time (we’ll store a fresh LA time each run)
         self.data_fetched_time = datetime.now(ZoneInfo("America/Los_Angeles"))
 
     def log_debug(self, message):
-        """Write debug information to the log file."""
+        """Write debug information to the log file and store in memory."""
+        timestamp = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M:%S")
+        log_line = f"[{timestamp}] {message}"
+        self.debug_entries.append((timestamp, message))
         with open(self.FILES["DEBUG"], 'a') as f:
-            timestamp = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"[{timestamp}] {message}\n")
+            f.write(log_line + "\n")
 
     def backup_current_data(self):
         """Backup the current new_data file before fetching new data."""
@@ -286,8 +291,7 @@ class ProjectFetcher:
     def save_to_excel(self, data):
         """
         Save project and phase data to Excel. 
-        We now pull the 'LastModifiedDate' and 'Date Fetched' directly from each project/phase
-        (both of which are set to LA time in fetch_project_details).
+        We now pull the 'LastModifiedDate' and 'Date Fetched' directly from each project/phase.
         """
         try:
             print("\n💾 Saving data to Excel...")
@@ -523,12 +527,12 @@ class ProjectFetcher:
           2. Phase Changes
           3. Filtered Phase Changes (only for projects with overall changes)
         NEW FUNCTIONALITY 2: The report now includes two extra columns for the "Last Modified" fields
-                              from both previous_data and new_data.
+                              from both previous_data and new_data, plus a new "Flag" column.
         """
         try:
             wb = Workbook()
             
-            # Sheet 1: Project Changes with new "Last Modified" fields
+            # --- Sheet 1: Project Changes with Flag ---
             ws_projects = wb.active
             ws_projects.title = "Project Changes"
             
@@ -541,6 +545,7 @@ class ProjectFetcher:
                 "Change",
                 "Previous Last Modified",
                 "New Last Modified",
+                "Flag",             # NEW: Flag column
                 "Change %"
             ]
             ws_projects.append(proj_headers)
@@ -549,30 +554,47 @@ class ProjectFetcher:
             
             for change in changes["projects"]:
                 old_amount = change["Old Amount"] or 0
-                change_percent = ((change["Change"] / old_amount) * 100) if old_amount != 0 else 100
+                new_amount = change["New Amount"] or 0
+                diff = change["Change"]
+                # Compute change percent
+                change_percent = ((diff / old_amount) * 100) if old_amount != 0 else 100
+                # Compute flag based on change
+                if old_amount == 0:
+                    flag = "New" if new_amount > 0 else ""
+                else:
+                    if diff > 0:
+                        flag = "Increase"
+                    elif diff < 0:
+                        flag = "Decrease"
+                    else:
+                        flag = ""
+                if old_amount != 0 and abs((diff / old_amount) * 100) >= 10:
+                    flag = (flag + " (Significant)").strip()
                 row = [
                     change["ID"],
                     change["Description"],
                     change["Status"],
                     change["Old Amount"],
                     change["New Amount"],
-                    change["Change"],
+                    diff,
                     change.get("Old Last Modified", ""),
                     change.get("New Last Modified", ""),
+                    flag,
                     f"{change_percent:.2f}%"
                 ]
                 ws_projects.append(row)
+                # Highlight the "Change" and "Change %" cells based on the sign
                 change_cell = ws_projects.cell(row=ws_projects.max_row, column=6)
-                percent_cell = ws_projects.cell(row=ws_projects.max_row, column=9)
+                percent_cell = ws_projects.cell(row=ws_projects.max_row, column=10)
                 fill = PatternFill(
-                    start_color="FFCDD2" if change["Change"] < 0 else "C8E6C9",
-                    end_color="FFCDD2" if change["Change"] < 0 else "C8E6C9",
+                    start_color="FFCDD2" if diff < 0 else "C8E6C9",
+                    end_color="FFCDD2" if diff < 0 else "C8E6C9",
                     fill_type="solid"
                 )
                 change_cell.fill = fill
                 percent_cell.fill = fill
             
-            # Sheet 2: Phase Changes with new "Last Modified" fields
+            # --- Sheet 2: Phase Changes with Flag ---
             ws_phases = wb.create_sheet("Phase Changes")
             phase_headers = [
                 "Project ID",
@@ -584,6 +606,7 @@ class ProjectFetcher:
                 "Change",
                 "Previous Last Modified",
                 "New Last Modified",
+                "Flag",             # NEW: Flag column
                 "Change %"
             ]
             ws_phases.append(phase_headers)
@@ -592,7 +615,20 @@ class ProjectFetcher:
             
             for change in changes["phases"]:
                 old_amount = change["Old Amount"] or 0
-                change_percent = ((change["Change"] / old_amount) * 100) if old_amount != 0 else 100
+                new_amount = change["New Amount"] or 0
+                diff = change["Change"]
+                change_percent = ((diff / old_amount) * 100) if old_amount != 0 else 100
+                if old_amount == 0:
+                    flag = "New" if new_amount > 0 else ""
+                else:
+                    if diff > 0:
+                        flag = "Increase"
+                    elif diff < 0:
+                        flag = "Decrease"
+                    else:
+                        flag = ""
+                if old_amount != 0 and abs((diff / old_amount) * 100) >= 10:
+                    flag = (flag + " (Significant)").strip()
                 row = [
                     change["Project ID"],
                     change["Phase ID"],
@@ -600,25 +636,25 @@ class ProjectFetcher:
                     change["Status"],
                     change["Old Amount"],
                     change["New Amount"],
-                    change["Change"],
+                    diff,
                     change.get("Old Last Modified", ""),
                     change.get("New Last Modified", ""),
+                    flag,
                     f"{change_percent:.2f}%"
                 ]
                 ws_phases.append(row)
                 change_cell = ws_phases.cell(row=ws_phases.max_row, column=7)
-                percent_cell = ws_phases.cell(row=ws_phases.max_row, column=10)
+                percent_cell = ws_phases.cell(row=ws_phases.max_row, column=11)
                 fill = PatternFill(
-                    start_color="FFCDD2" if change["Change"] < 0 else "C8E6C9",
-                    end_color="FFCDD2" if change["Change"] < 0 else "C8E6C9",
+                    start_color="FFCDD2" if diff < 0 else "C8E6C9",
+                    end_color="FFCDD2" if diff < 0 else "C8E6C9",
                     fill_type="solid"
                 )
                 change_cell.fill = fill
                 percent_cell.fill = fill
             
-            # Sheet 3: Filtered Phase Changes with new "Last Modified" fields
+            # --- Sheet 3: Filtered Phase Changes with Flag ---
             ws_filt = wb.create_sheet("Filtered Phase Changes")
-            changed_project_ids = set(item["ID"] for item in changes["projects"])
             filt_headers = [
                 "Project ID",
                 "Phase ID",
@@ -629,16 +665,31 @@ class ProjectFetcher:
                 "Change",
                 "Previous Last Modified",
                 "New Last Modified",
+                "Flag",             # NEW: Flag column
                 "Change %"
             ]
             ws_filt.append(filt_headers)
             for cell in ws_filt[1]:
                 cell.font = Font(bold=True)
             
+            changed_project_ids = set(item["ID"] for item in changes["projects"])
             for change in changes["phases"]:
                 if change["Project ID"] in changed_project_ids:
                     old_amount = change["Old Amount"] or 0
-                    change_percent = ((change["Change"] / old_amount) * 100) if old_amount != 0 else 100
+                    new_amount = change["New Amount"] or 0
+                    diff = change["Change"]
+                    change_percent = ((diff / old_amount) * 100) if old_amount != 0 else 100
+                    if old_amount == 0:
+                        flag = "New" if new_amount > 0 else ""
+                    else:
+                        if diff > 0:
+                            flag = "Increase"
+                        elif diff < 0:
+                            flag = "Decrease"
+                        else:
+                            flag = ""
+                    if old_amount != 0 and abs((diff / old_amount) * 100) >= 10:
+                        flag = (flag + " (Significant)").strip()
                     row = [
                         change["Project ID"],
                         change["Phase ID"],
@@ -646,20 +697,21 @@ class ProjectFetcher:
                         change["Status"],
                         change["Old Amount"],
                         change["New Amount"],
-                        change["Change"],
+                        diff,
                         change.get("Old Last Modified", ""),
                         change.get("New Last Modified", ""),
+                        flag,
                         f"{change_percent:.2f}%"
                     ]
                     ws_filt.append(row)
-                    cell_change = ws_filt.cell(row=ws_filt.max_row, column=7)
-                    percent_cell = ws_filt.cell(row=ws_filt.max_row, column=10)
+                    change_cell = ws_filt.cell(row=ws_filt.max_row, column=7)
+                    percent_cell = ws_filt.cell(row=ws_filt.max_row, column=11)
                     fill = PatternFill(
-                        start_color="FFCDD2" if change["Change"] < 0 else "C8E6C9",
-                        end_color="FFCDD2" if change["Change"] < 0 else "C8E6C9",
+                        start_color="FFCDD2" if diff < 0 else "C8E6C9",
+                        end_color="FFCDD2" if diff < 0 else "C8E6C9",
                         fill_type="solid"
                     )
-                    cell_change.fill = fill
+                    change_cell.fill = fill
                     percent_cell.fill = fill
             
             wb.save(filename)
@@ -669,6 +721,29 @@ class ProjectFetcher:
         except Exception as e:
             print(f"❌ Report generation failed: {str(e)}")
             self.log_debug(f"Report generation failed: {str(e)}")
+            raise
+
+    def save_debug_log_excel(self, filename):
+        """
+        NEW FUNCTIONALITY: Save the debug log entries (stored in self.debug_entries) into an Excel file,
+        making it easier to navigate the log.
+        """
+        try:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Debug Log"
+            headers = ["Timestamp", "Message"]
+            ws.append(headers)
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+            for entry in self.debug_entries:
+                ws.append(list(entry))
+            wb.save(filename)
+            print(f"✅ Debug log Excel saved to {filename}")
+            self.log_debug(f"Debug log Excel saved to {filename}")
+        except Exception as e:
+            print(f"❌ Saving debug log Excel failed: {str(e)}")
+            self.log_debug(f"Saving debug log Excel failed: {str(e)}")
             raise
 
     def display_changes(self, changes):
@@ -724,7 +799,7 @@ class ProjectFetcher:
         projects_tree.column("Change %", width=100)
         for change in changes["projects"]:
             old_amount = change["Old Amount"] or 0
-            change_percent = ((change["Change"] / old_amount) * 100) if old_amount != 0 else 100
+            cp = ((change["Change"] / old_amount) * 100) if old_amount != 0 else 100
             projects_tree.insert("", "end", values=(
                 change["ID"],
                 change["Description"],
@@ -732,7 +807,7 @@ class ProjectFetcher:
                 f"${change['Old Amount']:,.2f}",
                 f"${change['New Amount']:,.2f}",
                 f"${change['Change']:,.2f}",
-                f"{change_percent:.2f}%"
+                f"{cp:.2f}%"
             ))
         projects_scroll = ttk.Scrollbar(projects_frame, orient=tk.VERTICAL, command=projects_tree.yview)
         projects_tree.configure(yscrollcommand=projects_scroll.set)
@@ -765,7 +840,7 @@ class ProjectFetcher:
         phases_tree.column("Change %", width=100)
         for change in changes["phases"]:
             old_amount = change["Old Amount"] or 0
-            change_percent = ((change["Change"] / old_amount) * 100) if old_amount != 0 else 100
+            cp = ((change["Change"] / old_amount) * 100) if old_amount != 0 else 100
             phases_tree.insert("", "end", values=(
                 change["Project ID"],
                 change["Phase ID"],
@@ -774,7 +849,7 @@ class ProjectFetcher:
                 f"${change['Old Amount']:,.2f}",
                 f"${change['New Amount']:,.2f}",
                 f"${change['Change']:,.2f}",
-                f"{change_percent:.2f}%"
+                f"{cp:.2f}%"
             ))
         phases_scroll = ttk.Scrollbar(phases_frame, orient=tk.VERTICAL, command=phases_tree.yview)
         phases_tree.configure(yscrollcommand=phases_scroll.set)
@@ -904,12 +979,16 @@ def main():
         print(f"  - Phase changes: {len(changes['phases'])}")
         print(f"  - Filtered Phase changes: {len([ph for ph in changes['phases'] if ph['Project ID'] in set(item['ID'] for item in changes['projects'])])}")
         
-        # Generate the changes report (Excel file without a dashboard sheet)
+        # Generate the changes report (Excel file in the backlog directory)
         current_time = datetime.now(ZoneInfo("America/Los_Angeles"))
         date_str = current_time.strftime("%b-%d-%Y")
         time_str = current_time.strftime("%I-%M-%p")
         report_file = os.path.join(fetcher.week_dir, f"changes_report_{date_str}_at_{time_str}.xlsx")
         fetcher.save_comparison_report(changes, report_file)
+        
+        # Save the debug log into an Excel file for easier navigation
+        debug_log_file = os.path.join(fetcher.week_dir, f"debug_log_{date_str}_at_{time_str}.xlsx")
+        fetcher.save_debug_log_excel(debug_log_file)
         
         # Display changes in a GUI window
         fetcher.display_changes(changes)
